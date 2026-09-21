@@ -11,7 +11,7 @@ except ImportError:
 
 ROOT=Path(__file__).resolve().parent; DB=Path(os.getenv('DB_PATH',str(ROOT/'aytan.sqlite3')))
 MODEL=os.getenv('OPENAI_MODEL','gpt-4.1-mini'); OPENAI_KEY=os.getenv('OPENAI_API_KEY','').strip(); ADMIN_TOKEN=os.getenv('ADMIN_TOKEN','').strip(); ADMIN_USERNAME=os.getenv('ADMIN_USERNAME','aytanadmin').strip(); ADMIN_PASSWORD=os.getenv('ADMIN_PASSWORD','').strip(); SESSION_SECRET=os.getenv('SESSION_SECRET','').strip(); INBOUND_WEBHOOK_SECRET=os.getenv('INBOUND_WEBHOOK_SECRET','').strip(); OWNER_WEBHOOK_URL=os.getenv('OWNER_WEBHOOK_URL','').strip(); OWNER_WEBHOOK_SECRET=os.getenv('OWNER_WEBHOOK_SECRET','').strip(); WA_TOKEN=os.getenv('WHATSAPP_ACCESS_TOKEN','').strip(); WA_PHONE_ID=os.getenv('WHATSAPP_PHONE_NUMBER_ID','').strip(); WA_VERIFY=os.getenv('WHATSAPP_VERIFY_TOKEN','').strip(); WA_APP_SECRET=os.getenv('WHATSAPP_APP_SECRET','').strip()
-app=Flask(__name__);app.secret_key=SESSION_SECRET or secrets.token_hex(32);app.config.update(MAX_CONTENT_LENGTH=8192,JSON_SORT_KEYS=False,SESSION_COOKIE_HTTPONLY=True,SESSION_COOKIE_SAMESITE='Strict',SESSION_COOKIE_SECURE=os.getenv('COOKIE_SECURE','1')=='1'); RATE={}; MAX_MESSAGE=3000
+app=Flask(__name__);app.secret_key=SESSION_SECRET or secrets.token_hex(32); EFFECTIVE_SESSION_SECRET=SESSION_SECRET or app.secret_key;app.config.update(MAX_CONTENT_LENGTH=8192,JSON_SORT_KEYS=False,SESSION_COOKIE_HTTPONLY=True,SESSION_COOKIE_SAMESITE='Strict',SESSION_COOKIE_SECURE=os.getenv('COOKIE_SECURE','1')=='1'); RATE={}; MAX_MESSAGE=3000
 SERVICES={'insects':{'ru':'Уничтожение насекомых','kk':'Жәндіктерді жою','en':'Insect control'},'disinfection':{'ru':'Дезинфекция помещений','kk':'Үй-жайды дезинфекциялау','en':'Premises disinfection'},'rodents':{'ru':'Истребление грызунов','kk':'Кеміргіштерді жою','en':'Rodent control'},'outdoors':{'ru':'Обработка участков','kk':'Аумақты өңдеу','en':'Outdoor treatment'},'cleaning':{'ru':'Химчистка мебели','kk':'Жиһазды химиялық тазалау','en':'Furniture deep cleaning'},'odors':{'ru':'Устранение запахов','kk':'Иістерді кетіру','en':'Odor removal'},'pest':{'ru':'Пест-контроль бизнеса','kk':'Бизнеске арналған пест-бақылау','en':'Business pest control'},'weeds':{'ru':'Борьба с сорняками','kk':'Арамшөптермен күрес','en':'Weed control'}}
 FIELDS=['name','phone','language','service','problem','city','property_type','area','address','preferred_time','children_pets','previous_treatment','urgency','customer_questions']; STATUSES=['Консультация','Сбор данных','Готова к подтверждению','Подтверждено владельцем','В работе','Завершено','Отменено']; LOCKED=set(STATUSES[3:]); PHONE=re.compile(r'(?<!\d)(?:\+?7|8)[\s()\-]*\d{3}[\s()\-]*\d{3}[\s\-]*\d{2}[\s\-]*\d{2}(?!\d)')
 KNOWLEDGE='''AYTAN ECO работает в Алматы и Алматинской области. Услуги: уничтожение тараканов, клопов, муравьёв, блох, мух и комаров; дезинфекция помещений; борьба с крысами и мышами; обработка участков от клещей, комаров, ос и шершней; химчистка мебели, ковров и текстиля; устранение запахов после пожара, затопления, животных и плесени; пест-контроль для бизнеса; борьба с сорняками. Ориентиры из сохранённой версии сайта: квартиры 1/2/3/4 комнаты от 12 000/18 000/23 000/28 000 ₸; премиум-вариант 20 000/30 000/40 000/52 000 ₸; коттеджи до 100/500/1000 м² от 25 000/40 000/60 000 ₸; пест-контроль от 25 000 ₸/месяц. Это не оферта: итоговая цена зависит от площади, степени проблемы и метода, её подтверждает владелец. Для бизнеса возможны разовые/регулярные работы, договор, акты, журналы и безналичная оплата — конкретный пакет подтверждает владелец. Типовая подготовка: убрать продукты и посуду, открыть доступ к плинтусам, отодвинуть мебель 10–15 см. Люди и животные покидают помещение на время обработки; срок возвращения зависит от препарата и инструкции специалиста. Не называть непроверенные препараты, лицензии, точные гарантии, свободные слоты, эффективность или безопасность для конкретного человека. Сначала ответь, затем задай только один полезный вопрос: проблема, объект, площадь/комнаты, город, дети/животные, прежние обработки или желаемое время.'''
@@ -79,7 +79,7 @@ def init():
    ]
    c.executemany('INSERT INTO knowledge(category,question,answer,created_at,updated_at) VALUES (?,?,?,?,?)',[(a,b,d,stamp,stamp) for a,b,d in seed])
 def sid_ok(s): return bool(re.fullmatch(r'[a-f0-9]{32}',s or ''))
-def token(s): return hmac.new(SESSION_SECRET.encode(),s.encode(),hashlib.sha256).hexdigest() if SESSION_SECRET else None
+def token(s): return hmac.new(EFFECTIVE_SESSION_SECRET.encode(),s.encode(),hashlib.sha256).hexdigest()
 def session_ok(s,t): return bool(token(s) and t and hmac.compare_digest(str(t),token(s)))
 def rate(scope,max_hits):
  ip=request.remote_addr or 'unknown'; k=f'{scope}:{ip}'; t=time.time(); hits=[x for x in RATE.get(k,[]) if t-x<60]
@@ -201,7 +201,16 @@ def process(s,text,source='web'):
 @app.get('/')
 def home():return render_template('index.html',services=SERVICES).replace('</head>','<style>#tcrm,#crm{display:none!important}</style></head>')
 @app.get('/crm')
-def crm():return render_template('admin.html',services=SERVICES,statuses=STATUSES)
+@app.get('/admin')
+@app.get('/admin/')
+@app.get('/admin/dashboard')
+@app.get('/admin/leads')
+@app.get('/admin/conversations')
+@app.get('/admin/knowledge')
+@app.get('/admin/calendar')
+def crm():
+ return render_template('admin.html',services=SERVICES,statuses=STATUSES)
+
 @app.post('/api/admin/login')
 def admin_login():
  if not rate('admin-login',8):return jsonify(error='Too many login attempts'),429
@@ -351,6 +360,25 @@ def leads():
  sql+=' ORDER BY updated_at DESC LIMIT 500'
  with db() as c:rows=c.execute(sql,p).fetchall()
  return jsonify([dict(x) for x in rows])
+@app.post('/api/leads')
+@auth
+def lead_create_manual():
+ d=request.get_json(silent=True) or {}; s=uuid.uuid4().hex; data={k:str(d.get(k,'')).strip()[:600] for k in FIELDS+['notes']}
+ if data.get('phone'):
+  data['phone']=phone(data['phone'])
+  if not data['phone']:return jsonify(error='Invalid phone'),400
+ if data.get('service') and data['service'] not in SERVICES:return jsonify(error='Invalid service'),400
+ with db() as c:
+  session(c,s); lead=upsert(c,s,data,data.get('notes') or 'Заявка добавлена владельцем','admin'); event(c,lead['id'],'owner_created')
+ return jsonify(ok=True,id=lead['id']),201
+@app.delete('/api/leads/<int:lid>')
+@auth
+def lead_delete(lid):
+ with db() as c:
+  lead=c.execute('SELECT * FROM leads WHERE id=?',(lid,)).fetchone()
+  if not lead:return jsonify(error='Not found'),404
+  sid=lead['session_id']; c.execute('DELETE FROM appointments WHERE lead_id=?',(lid,)); c.execute('DELETE FROM notification_outbox WHERE lead_id=?',(lid,)); c.execute('DELETE FROM lead_events WHERE lead_id=?',(lid,)); c.execute('DELETE FROM leads WHERE id=?',(lid,)); c.execute('DELETE FROM messages WHERE session_id=?',(sid,)); c.execute('DELETE FROM sessions WHERE id=?',(sid,))
+ return jsonify(ok=True)
 @app.get('/api/leads/<int:lid>')
 @auth
 def detail(lid):
