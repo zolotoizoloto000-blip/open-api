@@ -199,7 +199,7 @@ def process(s,text,source='web'):
  if lead['status']=='Готова к подтверждению':queue_notice(lead,'lead_ready')
  return lead,reply,bool(OPENAI_KEY and OpenAI)
 @app.get('/')
-def home():return render_template('index.html',services=SERVICES).replace('</head>','<style>#tcrm,#crm{display:none!important}</style></head>')
+def home():return render_template('index.html',services=SERVICES)
 @app.get('/crm')
 @app.get('/admin')
 @app.get('/admin/')
