@@ -96,10 +96,34 @@ def auth(fn):
    if not hmac.compare_digest(request.headers.get('X-CSRF-Token',''),str(flask_session.get('csrf',''))):return jsonify(error='Invalid CSRF token'),403
   return fn(*a,**k)
  return w
+LAST_AI_ERROR = ''
 def ai(messages,max_tokens=450):
- if not(OPENAI_KEY and OpenAI):return None
- try:return OpenAI(api_key=OPENAI_KEY,timeout=25).responses.create(model=MODEL,input=messages,max_output_tokens=max_tokens).output_text.strip()
- except Exception: app.logger.exception('OpenAI request failed');return None
+ global LAST_AI_ERROR
+ if not OPENAI_KEY:
+  LAST_AI_ERROR='OPENAI_API_KEY is not configured';return None
+ if not OpenAI:
+  LAST_AI_ERROR='OpenAI SDK is not available';return None
+ try:
+  out=OpenAI(api_key=OPENAI_KEY,timeout=25).responses.create(model=MODEL,input=messages,max_output_tokens=max_tokens)
+  text=(out.output_text or '').strip()
+  if not text: LAST_AI_ERROR='OpenAI returned an empty response';return None
+  LAST_AI_ERROR='';return text
+ except Exception as exc:
+  LAST_AI_ERROR=f'{type(exc).__name__}: {str(exc)[:300]}'
+  app.logger.exception('OpenAI request failed');return None
+
+def openai_probe():
+ global LAST_AI_ERROR
+ if not OPENAI_KEY:return False,'OPENAI_API_KEY is not configured'
+ if not OpenAI:return False,'OpenAI SDK is not available'
+ try:
+  out=OpenAI(api_key=OPENAI_KEY,timeout=12).responses.create(model=MODEL,input='Reply with exactly: OK',max_output_tokens=8)
+  text=(out.output_text or '').strip()
+  if not text:return False,'OpenAI returned an empty response'
+  LAST_AI_ERROR='';return True,None
+ except Exception as exc:
+  LAST_AI_ERROR=f'{type(exc).__name__}: {str(exc)[:300]}'
+  app.logger.exception('OpenAI probe failed');return False,LAST_AI_ERROR
 def json_safe(text):
  try:return json.loads(text[text.find('{'):text.rfind('}')+1]) if text else {}
  except (ValueError,TypeError):return {}
@@ -197,7 +221,7 @@ def process(s,text,source='web'):
  with db() as c:
   session(c,s);hist=[dict(x) for x in c.execute('SELECT role,content FROM messages WHERE session_id=? ORDER BY id DESC LIMIT 24',(s,)).fetchall()][::-1];old=c.execute('SELECT * FROM leads WHERE session_id=?',(s,)).fetchone();old=dict(old) if old else {};extract=clean(json_safe(ai([{'role':'system','content':EXTRACT},{'role':'user','content':'CRM: '+json.dumps({k:old.get(k,'') for k in FIELDS},ensure_ascii=False)+'\nИстория: '+json.dumps(hist[-10:],ensure_ascii=False)+'\nНовое: '+text}],280)));lead=upsert(c,s,extract,text,source);dynamic='\n\nПОДТВЕРЖДЁННЫЕ ОТВЕТЫ ИЗ CRM:\n'+knowledge_text(c);reply=ai([{'role':'system','content':MANAGER+dynamic+'\nКАРТОЧКА CRM: '+json.dumps({k:lead.get(k,'') for k in FIELDS+['status','estimate']},ensure_ascii=False)+'\nПамять: '+summary(lead)}]+[{'role':x['role'],'content':x['content']} for x in hist]+[{'role':'user','content':text}],600) or fallback(text);c.execute('INSERT INTO messages(session_id,role,content,source,created_at) VALUES (?,?,?,?,?)',(s,'user',text,source,now()));c.execute('INSERT INTO messages(session_id,role,content,source,created_at) VALUES (?,?,?,?,?)',(s,'assistant',reply,'system',now()));event(c,lead['id'],'message_captured',source)
  if lead['status']=='Готова к подтверждению':queue_notice(lead,'lead_ready')
- return lead,reply,bool(OPENAI_KEY and OpenAI)
+ return lead,reply,bool(OPENAI_KEY and OpenAI and not LAST_AI_ERROR)
 @app.get('/')
 def home():return render_template('index.html',services=SERVICES)
 @app.get('/crm')
@@ -226,7 +250,11 @@ def admin_logout():flask_session.clear();return jsonify(ok=True)
 @auth
 def admin_me():return jsonify(ok=True,username=flask_session.get('admin') or 'api-token',csrf=flask_session.get('csrf',''))
 @app.get('/api/health')
-def health():return jsonify(ok=True,service='AYTAN ECO AI Manager',real_ai=bool(OPENAI_KEY and OpenAI),model=MODEL if OPENAI_KEY else None,crm=True,dialogue_memory=True,automatic_lead_capture=True,inbound_webhook_ready=bool(INBOUND_WEBHOOK_SECRET),whatsapp_connected=bool(WA_TOKEN and WA_PHONE_ID and WA_APP_SECRET and WA_VERIFY),calendar_connected=True,owner_notifications_connected=bool(OWNER_WEBHOOK_URL and OWNER_WEBHOOK_SECRET),production_session_security=bool(SESSION_SECRET))
+def health():return jsonify(ok=True,service='AYTAN ECO AI Manager',openai_configured=bool(OPENAI_KEY),real_ai=bool(OPENAI_KEY and OpenAI),openai_verified=False,model=MODEL if OPENAI_KEY else None,crm=True,dialogue_memory=True,automatic_lead_capture=True,inbound_webhook_ready=bool(INBOUND_WEBHOOK_SECRET),whatsapp_connected=bool(WA_TOKEN and WA_PHONE_ID and WA_APP_SECRET and WA_VERIFY),calendar_connected=True,owner_notifications_connected=bool(OWNER_WEBHOOK_URL and OWNER_WEBHOOK_SECRET),production_session_security=bool(SESSION_SECRET))
+@app.get('/api/openai/check')
+def openai_check():
+ if not rate('openai-check',6):return jsonify(ok=False,error='Too many requests'),429
+ ok,err=openai_probe();return jsonify(ok=ok,configured=bool(OPENAI_KEY),model=MODEL,error=err),200 if ok else 503
 @app.post('/api/chat')
 def chat():
  if not rate('chat',30):return jsonify(error='Too many requests'),429
